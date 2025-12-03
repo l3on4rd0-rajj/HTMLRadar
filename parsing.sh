@@ -2,7 +2,7 @@
 
 ################################################################################
 # Titulo    : Parsing HTML (refatorado)                                        #
-# Versao    : 2.2                                                              #
+# Versao    : 2.3                                                              #
 # -----------------------------------------------------------------------------#
 # Descrição:                                                                   #
 #   Ferramenta em Bash para:                                                   #
@@ -13,6 +13,7 @@
 #     - (Opcional) Saída em JSON (--json [arquivo])                            #
 #     - (Opcional) Modo silencioso (--silent)                                  #
 #     - (Opcional) Crawling simples de URLs internas (--crawl)                 #
+#     - (Opcional) Mapear comentários HTML (--comments)                        #
 ################################################################################
 
 # ==============================================================================
@@ -26,7 +27,7 @@ CYAN='\033[36;1m'
 RED_BLINK='\033[31;5;1m'
 END='\033[m'
 
-VERSION='2.2'
+VERSION='2.3'
 
 # Diretório onde o usuário estava ao chamar o script
 ORIG_PWD="$(pwd)"
@@ -42,6 +43,7 @@ SILENT=0
 JSON=0
 JSON_FILE=""
 CRAWL=0
+COMMENTS=0   # <- novo: flag para exibir comentários HTML
 
 # Arrays para saída estruturada
 declare -a JSON_ENTRIES=()
@@ -104,6 +106,7 @@ DESCRIÇÃO
       - Verifica hosts vivos via DNS
       - Pode exportar hosts vivos para arquivo
       - Pode gerar saída em JSON
+      - Pode mapear comentários HTML (<!-- ... -->)
 
 OPÇÕES
     -h, --help
@@ -136,6 +139,10 @@ OPÇÕES
           - Identifica URLs internas (mesmo host base) encontradas nos links
           - Salva essas URLs em um arquivo 'crawl_urls.txt' no diretório temporário
         (pensado para integração com pipelines de brute force + screenshots).
+
+    -c, --comments
+        Mapeia comentários HTML (blocos <!-- ... -->) encontrados na página
+        e exibe uma seção com o conteúdo desses comentários.
 
 ARGUMENTOS
     URL
@@ -224,6 +231,10 @@ __ParseArgs__() {
             ;;
             --crawl)
                 CRAWL=1
+                shift
+            ;;
+            -c|--comments)
+                COMMENTS=1
                 shift
             ;;
             -*)
@@ -464,6 +475,61 @@ ${END}"
 }
 
 # ==============================================================================
+# Mapeando comentários HTML
+# ==============================================================================
+
+__FindComments__() {
+    log_info "${CYAN}[+] Extraindo comentários HTML (<!-- ... -->)...${END}\n"
+
+    : > comments
+
+    awk '
+        BEGIN { in_comment=0 }
+        {
+            line=$0
+
+            # Início de comentário
+            if (index(line, "<!--") > 0) {
+                in_comment=1
+            }
+
+            if (in_comment) {
+                print line >> "comments"
+            }
+
+            # Fim de comentário
+            if (index(line, "-->") > 0 && in_comment) {
+                in_comment=0
+                print "" >> "comments"
+            }
+        }
+    ' FILE 2>/dev/null || true
+
+    if [[ ! -s comments ]]; then
+        log_info "${YELLOW}[i] Nenhum comentário HTML encontrado.${END}\n"
+    fi
+}
+
+__ShowComments__() {
+    [[ "$SILENT" -eq 1 ]] && return
+    [[ "$COMMENTS" -eq 1 ]] || return
+
+    echo -e "${YELLOW}
+################################################################################
+#                       Comentários HTML encontrados                            #
+################################################################################
+${END}"
+
+    if [[ ! -s comments ]]; then
+        echo -e "${RED}[-] Nenhum comentário HTML encontrado.${END}\n"
+        return
+    fi
+
+    cat comments
+    echo
+}
+
+# ==============================================================================
 # Exportando hosts vivos para arquivo (se -o/--output)
 # ==============================================================================
 
@@ -512,21 +578,23 @@ __OutputJson__() {
 }
 
 # ==============================================================================
-# Mostrando quantidade de links e hosts encontrados
+# Mostrando quantidade de links, hosts e comentários encontrados
 # ==============================================================================
 
 __ShowResume__() {
     [[ "$SILENT" -eq 1 ]] && return
 
-    local nlinks nhosts
+    local nlinks nhosts ncomments
     nlinks=$(wc -l < links 2>/dev/null || echo 0)
     nhosts=$(wc -l < hosts 2>/dev/null || echo 0)
+    ncomments=$(wc -l < comments 2>/dev/null || echo 0)
 
     echo -e "
 ${YELLOW}================================================================================${END}
 Found :
-        Links : ${CYAN}${nlinks}${END}
-        Hosts : ${CYAN}${nhosts}${END}
+        Links      : ${CYAN}${nlinks}${END}
+        Hosts      : ${CYAN}${nhosts}${END}
+        Comentários: ${CYAN}${ncomments}${END}
 ${YELLOW}================================================================================${END}
 "
 }
@@ -554,6 +622,8 @@ __Main__() {
     __ShowHosts__
     __CrawlSimple__
     __LiveHosts__
+    __FindComments__
+    __ShowComments__
     __ShowResume__
     __ExportLiveHosts__
     __OutputJson__
